@@ -1,0 +1,29 @@
+<?php
+
+/* Project */
+        define('PROJECT_VERSION', 'Cypress Payment System');
+
+/* Database */
+        define('DB_SERVER', '127.0.0.1');
+        define('DB_USER', 'cypress');
+        define('DB_PASS', 'rosewood');
+        define('DB_DATABASE', 'cypress_new');
+        define('DB_TYPE', 'pgsql');
+        define('DB_PORT', '5432');
+
+/* Simulator Communication */
+		define('SHARED_SECRET', 'fQxywNjFTx06Ll');
+		define('DEBUG_UUID', '71610693-8e53-4f95-9ea5-82c7ec435d4b');
+
+/* Downloads */
+		define('DOWNLOAD_BASE', 'http://pfa3.x.rootbsd.net:8512/download.php');
+		define('DOWNLOAD_DIR', '/home/dcarmich/cypress/downloads/');
+
+		/* Allow direct file download (hotlinking)? */
+		
+		/* If set to nonempty value (Example: example.com) will only allow downloads
+			when referrer contains this text */
+		define('ALLOWED_REFERRER', '');
+
+
+?>

@@ -1,0 +1,504 @@
+--
+-- PostgreSQL database dump
+--
+
+-- Dumped from database version 9.5.0
+-- Dumped by pg_dump version 9.5.0
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SET check_function_bodies = false;
+SET client_min_messages = warning;
+SET row_security = off;
+
+--
+-- Name: plpgsql; Type: EXTENSION; Schema: -; Owner: 
+--
+
+CREATE EXTENSION IF NOT EXISTS plpgsql WITH SCHEMA pg_catalog;
+
+
+--
+-- Name: EXTENSION plpgsql; Type: COMMENT; Schema: -; Owner: 
+--
+
+COMMENT ON EXTENSION plpgsql IS 'PL/pgSQL procedural language';
+
+
+--
+-- Name: pgcrypto; Type: EXTENSION; Schema: -; Owner: 
+--
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
+
+
+--
+-- Name: EXTENSION pgcrypto; Type: COMMENT; Schema: -; Owner: 
+--
+
+COMMENT ON EXTENSION pgcrypto IS 'cryptographic functions';
+
+
+SET search_path = public, pg_catalog;
+
+--
+-- Name: check_purchased(character varying, character varying); Type: FUNCTION; Schema: public; Owner: dcarmich
+--
+
+CREATE FUNCTION check_purchased(our_show_id character varying, our_avatar_uuid character varying) RETURNS boolean
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+purchase_result VARCHAR;
+BEGIN
+SELECT INTO purchase_result show_id FROM purchase_table WHERE show_id = our_show_id AND avatar_uuid = our_avatar_uuid;
+if purchase_result IS DISTINCT FROM our_show_id THEN
+RETURN FALSE;
+END IF;
+RETURN TRUE;
+END $$;
+
+
+ALTER FUNCTION public.check_purchased(our_show_id character varying, our_avatar_uuid character varying) OWNER TO dcarmich;
+
+--
+-- Name: filename_trigger(); Type: FUNCTION; Schema: public; Owner: dcarmich
+--
+
+CREATE FUNCTION filename_trigger() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+our_filename VARCHAR;
+proc_region_name VARCHAR;
+fn_extension VARCHAR;
+BEGIN
+SELECT INTO fn_extension our_extension FROM curr_extension;
+proc_region_name := replace(new.region_name, ' ', '_');
+our_filename := proc_region_name || '_';
+our_filename := our_filename || to_char(now(), 'MM');
+our_filename := our_filename || to_char(now(), 'DD');
+our_filename := our_filename || to_char(now(), 'YYYY');
+our_filename := our_filename || '_' || substr(new.show_id, 7, 2) || fn_extension;
+new.file_name = our_filename;
+RETURN new;
+END;
+$$;
+
+
+ALTER FUNCTION public.filename_trigger() OWNER TO dcarmich;
+
+--
+-- Name: get_filename(character varying); Type: FUNCTION; Schema: public; Owner: dcarmich
+--
+
+CREATE FUNCTION get_filename(our_show_id character varying) RETURNS character varying
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+our_filename VARCHAR;
+BEGIN
+SELECT INTO our_filename file_name FROM show_table WHERE show_id = our_show_id;
+IF NOT FOUND THEN
+RETURN FALSE;
+END IF;
+RETURN our_filename;
+END $$;
+
+
+ALTER FUNCTION public.get_filename(our_show_id character varying) OWNER TO dcarmich;
+
+--
+-- Name: get_purchasers(character varying); Type: FUNCTION; Schema: public; Owner: dcarmich
+--
+
+CREATE FUNCTION get_purchasers(our_show_id character varying) RETURNS character varying[]
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+purchasers VARCHAR[];
+BEGIN
+purchasers := array(SELECT purchase_table.avatar_uuid FROM show_table JOIN purchase_table ON
+show_table.show_id = purchase_table.show_id WHERE purchase_table.show_id = our_show_id);
+RETURN purchasers;
+END $$;
+
+
+ALTER FUNCTION public.get_purchasers(our_show_id character varying) OWNER TO dcarmich;
+
+--
+-- Name: init_download(character varying, inet); Type: FUNCTION; Schema: public; Owner: dcarmich
+--
+
+CREATE FUNCTION init_download(our_link_id character varying, our_ip_address inet) RETURNS character varying
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+our_filename VARCHAR;
+BEGIN
+SELECT INTO our_filename show_table.file_name FROM show_table JOIN purchase_table ON
+purchase_table.show_id = show_table.show_id WHERE purchase_table.link_id = our_link_id;
+IF NOT FOUND THEN
+RETURN FALSE;
+END IF;
+UPDATE purchase_table SET download_count = download_count + 1 WHERE link_id = our_link_id;
+INSERT INTO download_log_table (link_id, ip_address) VALUES (our_link_id, our_ip_address); 
+RETURN our_filename;
+END $$;
+
+
+ALTER FUNCTION public.init_download(our_link_id character varying, our_ip_address inet) OWNER TO dcarmich;
+
+--
+-- Name: linkid_trigger(); Type: FUNCTION; Schema: public; Owner: dcarmich
+--
+
+CREATE FUNCTION linkid_trigger() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+our_linkid VARCHAR;
+BEGIN
+our_linkid := left(encode(digest(new.avatar_uuid::text, 'sha1'), 'hex'), 8);
+our_linkid := our_linkid || left(encode(digest(new.show_id::text, 'sha1'), 'hex'), 8);
+new.link_id = our_linkid;
+RETURN new;
+END;
+$$;
+
+
+ALTER FUNCTION public.linkid_trigger() OWNER TO dcarmich;
+
+--
+-- Name: log_showid_linkid_trigger(); Type: FUNCTION; Schema: public; Owner: dcarmich
+--
+
+CREATE FUNCTION log_showid_linkid_trigger() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+our_show_id VARCHAR;
+BEGIN
+SELECT INTO our_show_id show_id FROM purchase_table WHERE link_id = new.link_id;
+IF NOT FOUND THEN
+our_show_id := '(none)';
+END IF;
+new.show_id = our_show_id;
+RETURN new;
+END;
+$$;
+
+
+ALTER FUNCTION public.log_showid_linkid_trigger() OWNER TO dcarmich;
+
+--
+-- Name: reset_filename(character varying); Type: FUNCTION; Schema: public; Owner: dcarmich
+--
+
+CREATE FUNCTION reset_filename(our_show_id character varying) RETURNS character varying
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+new_filename VARCHAR;
+our_region_name VARCHAR;
+fn_extension VARCHAR;
+BEGIN
+SELECT INTO our_region_name region_name FROM show_table WHERE show_id = our_show_id;
+SELECT INTO fn_extension our_extension FROM curr_extension;
+new_filename := our_region_name || '_';
+new_filename := new_filename || to_char(now(), 'MM');
+new_filename := new_filename || to_char(now(), 'DD');
+new_filename := new_filename || to_char(now(), 'YYYY');
+new_filename := new_filename || '_' || substr(our_show_id, 7, 2) || fn_extension;
+UPDATE show_table SET file_name = new_filename WHERE show_id = our_show_id;
+IF FOUND THEN
+RETURN new_filename;
+END IF;
+END $$;
+
+
+ALTER FUNCTION public.reset_filename(our_show_id character varying) OWNER TO dcarmich;
+
+--
+-- Name: showid_trigger(); Type: FUNCTION; Schema: public; Owner: dcarmich
+--
+
+CREATE FUNCTION showid_trigger() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+        our_random VARCHAR;
+BEGIN
+        our_random := array_to_string(ARRAY(SELECT chr((48 + round(random() * 9)) :: integer) FROM generate_series(1,8)), '');
+        new.show_id = our_random;
+RETURN new;
+END;
+$$;
+
+
+ALTER FUNCTION public.showid_trigger() OWNER TO dcarmich;
+
+--
+-- Name: update_filename(character varying, character varying); Type: FUNCTION; Schema: public; Owner: dcarmich
+--
+
+CREATE FUNCTION update_filename(our_show_id character varying, our_new_name character varying) RETURNS character varying
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+our_filename VARCHAR;
+fn_extension VARCHAR;
+BEGIN
+SELECT INTO fn_extension our_extension FROM curr_extension;
+our_filename := replace(our_new_name, ' ', '_');
+our_filename := our_filename || '_';
+our_filename := our_filename || to_char(now(), 'MM');
+our_filename := our_filename || to_char(now(), 'DD');
+our_filename := our_filename || to_char(now(), 'YYYY');
+our_filename :=our_filename || fn_extension;
+UPDATE show_table SET file_name = our_filename WHERE show_id = our_show_id;
+IF FOUND THEN
+RETURN our_filename;
+ELSE
+RAISE NOTICE 'Nonexistent show --> %', our_filename;
+RETURN our_filename;
+END IF;
+END $$;
+
+
+ALTER FUNCTION public.update_filename(our_show_id character varying, our_new_name character varying) OWNER TO dcarmich;
+
+SET default_tablespace = '';
+
+SET default_with_oids = false;
+
+--
+-- Name: avatar_im_log; Type: TABLE; Schema: public; Owner: cypress
+--
+
+CREATE TABLE avatar_im_log (
+    avatar_uuid character varying(37),
+    avatar_name character varying(63),
+    im_time timestamp without time zone DEFAULT now()
+);
+
+
+ALTER TABLE avatar_im_log OWNER TO cypress;
+
+--
+-- Name: avatar_url; Type: TABLE; Schema: public; Owner: cypress
+--
+
+CREATE TABLE avatar_url (
+    our_url character varying(82)
+);
+
+
+ALTER TABLE avatar_url OWNER TO cypress;
+
+--
+-- Name: curr_extension; Type: TABLE; Schema: public; Owner: cypress
+--
+
+CREATE TABLE curr_extension (
+    our_extension character varying(4)
+);
+
+
+ALTER TABLE curr_extension OWNER TO cypress;
+
+--
+-- Name: download_log_table; Type: TABLE; Schema: public; Owner: cypress
+--
+
+CREATE TABLE download_log_table (
+    show_id character varying(8),
+    link_id character varying(16),
+    download_time timestamp without time zone DEFAULT now(),
+    ip_address inet
+);
+
+
+ALTER TABLE download_log_table OWNER TO cypress;
+
+--
+-- Name: purchase_table; Type: TABLE; Schema: public; Owner: cypress
+--
+
+CREATE TABLE purchase_table (
+    show_id character varying(8),
+    avatar_uuid character varying(36),
+    date timestamp without time zone DEFAULT now(),
+    link_id character varying(16),
+    download_count integer DEFAULT 0
+);
+
+
+ALTER TABLE purchase_table OWNER TO cypress;
+
+--
+-- Name: show_table; Type: TABLE; Schema: public; Owner: cypress
+--
+
+CREATE TABLE show_table (
+    show_id character varying(8) NOT NULL,
+    region_name character varying(35),
+    show_time timestamp without time zone DEFAULT now(),
+    file_name character varying(64)
+);
+
+
+ALTER TABLE show_table OWNER TO cypress;
+
+--
+-- Data for Name: avatar_im_log; Type: TABLE DATA; Schema: public; Owner: cypress
+--
+
+COPY avatar_im_log (avatar_uuid, avatar_name, im_time) FROM stdin;
+71610693-8e53-4f95-9ea5-82c7ec435d4b	Douglas Rishmal	2014-02-06 22:25:52.846788
+d86a92e5-4a7e-42cc-9068-9a1ee3098d80	Mireille Jenvieve	2014-02-06 22:29:04.218387
+79e91fec-825f-46ae-bf37-4f535a8ebcf3	Charmling Anatra	2014-02-23 23:06:19.658902
+\.
+
+
+--
+-- Data for Name: avatar_url; Type: TABLE DATA; Schema: public; Owner: cypress
+--
+
+COPY avatar_url (our_url) FROM stdin;
+http://sim10010.agni.lindenlab.com:12046/cap/153d4195-9c10-6b63-aea6-b772ef83026a
+\.
+
+
+--
+-- Data for Name: curr_extension; Type: TABLE DATA; Schema: public; Owner: cypress
+--
+
+COPY curr_extension (our_extension) FROM stdin;
+.mp3
+\.
+
+
+--
+-- Data for Name: download_log_table; Type: TABLE DATA; Schema: public; Owner: cypress
+--
+
+COPY download_log_table (show_id, link_id, download_time, ip_address) FROM stdin;
+\.
+
+
+--
+-- Data for Name: purchase_table; Type: TABLE DATA; Schema: public; Owner: cypress
+--
+
+COPY purchase_table (show_id, avatar_uuid, date, link_id, download_count) FROM stdin;
+45616643	71610693-8e53-4f95-9ea5-82c7ec435d4b	2014-02-06 22:25:48.355522	bcae9d402a2c81d0	0
+45616643	d86a92e5-4a7e-42cc-9068-9a1ee3098d80	2014-02-06 22:29:00.557038	13e755092a2c81d0	0
+68310665	79e91fec-825f-46ae-bf37-4f535a8ebcf3	2014-02-23 23:06:15.591932	eda5ec3ecf5f5a1e	0
+68310665	71610693-8e53-4f95-9ea5-82c7ec435d4b	2014-03-02 23:08:05.969221	bcae9d40cf5f5a1e	0
+33456748	f443c9f2-b672-4d9c-8d26-c7c1825bc6d1	2014-03-19 22:24:08.911876	f2bbbb1a28964ffb	0
+33456748	e4819b81-23c9-41ea-9806-bfd3b6b1919c	2014-03-19 22:30:21.074195	a7dee6d728964ffb	0
+\.
+
+
+--
+-- Data for Name: show_table; Type: TABLE DATA; Schema: public; Owner: cypress
+--
+
+COPY show_table (show_id, region_name, show_time, file_name) FROM stdin;
+45616643	Ce Soir	2014-02-06 21:25:04.276055	Ce_Soir_02062014_43.mp3
+12298872	Spindrift	2014-02-23 20:20:33.958512	Spindrift_02232014_72.mp3
+64836315	Hookton	2014-02-23 21:43:18.528144	Hookton_02232014_15.mp3
+73076454	Spindrift	2014-03-02 21:53:29.62155	Spindrift_03022014_54.mp3
+66678364	Spindrift	2014-03-09 22:26:26.194245	Spindrift_03092014_64.mp3
+68310665	Spindrift	2014-02-23 21:52:16.54094	GerberBondAmbientSunday_03092014.mp3
+33456748	VIRTLANTIS Community	2014-03-19 21:33:05.79519	VIRTLANTIS_Community_03192014_48.mp3
+\.
+
+
+--
+-- Name: show_table_pkey; Type: CONSTRAINT; Schema: public; Owner: cypress
+--
+
+ALTER TABLE ONLY show_table
+    ADD CONSTRAINT show_table_pkey PRIMARY KEY (show_id);
+
+
+--
+-- Name: aashow_insert; Type: TRIGGER; Schema: public; Owner: cypress
+--
+
+CREATE TRIGGER aashow_insert BEFORE INSERT ON show_table FOR EACH ROW EXECUTE PROCEDURE showid_trigger();
+
+
+--
+-- Name: ccfile_insert; Type: TRIGGER; Schema: public; Owner: cypress
+--
+
+CREATE TRIGGER ccfile_insert BEFORE INSERT ON show_table FOR EACH ROW EXECUTE PROCEDURE filename_trigger();
+
+
+--
+-- Name: download_log_insert; Type: TRIGGER; Schema: public; Owner: cypress
+--
+
+CREATE TRIGGER download_log_insert BEFORE INSERT ON download_log_table FOR EACH ROW EXECUTE PROCEDURE log_showid_linkid_trigger();
+
+
+--
+-- Name: linkid_insert; Type: TRIGGER; Schema: public; Owner: cypress
+--
+
+CREATE TRIGGER linkid_insert BEFORE INSERT ON purchase_table FOR EACH ROW EXECUTE PROCEDURE linkid_trigger();
+
+
+--
+-- Name: download_log_table_show_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: cypress
+--
+
+ALTER TABLE ONLY download_log_table
+    ADD CONSTRAINT download_log_table_show_id_fkey FOREIGN KEY (show_id) REFERENCES show_table(show_id);
+
+
+--
+-- Name: purchase_table_show_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: cypress
+--
+
+ALTER TABLE ONLY purchase_table
+    ADD CONSTRAINT purchase_table_show_id_fkey FOREIGN KEY (show_id) REFERENCES show_table(show_id);
+
+
+--
+-- Name: public; Type: ACL; Schema: -; Owner: pgsql
+--
+
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+REVOKE ALL ON SCHEMA public FROM pgsql;
+GRANT ALL ON SCHEMA public TO pgsql;
+GRANT ALL ON SCHEMA public TO PUBLIC;
+
+
+--
+-- Name: purchase_table; Type: ACL; Schema: public; Owner: cypress
+--
+
+REVOKE ALL ON TABLE purchase_table FROM PUBLIC;
+REVOKE ALL ON TABLE purchase_table FROM cypress;
+GRANT ALL ON TABLE purchase_table TO cypress;
+
+
+--
+-- Name: show_table; Type: ACL; Schema: public; Owner: cypress
+--
+
+REVOKE ALL ON TABLE show_table FROM PUBLIC;
+REVOKE ALL ON TABLE show_table FROM cypress;
+GRANT ALL ON TABLE show_table TO cypress;
+
+
+--
+-- PostgreSQL database dump complete
+--
+
